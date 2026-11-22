@@ -5,7 +5,7 @@
 # 应用机：纯 IPv6 服务器，WireGuard 客户端，只把 IPv4 默认路由走隧道，IPv6 原生直出
 # 私钥在本机生成、只留在本机，两台机器之间只交换公钥。
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 IFACE_NAME="v4exit"
 WG_DIR="/etc/wireguard"
 CONF="$WG_DIR/$IFACE_NAME.conf"
@@ -145,6 +145,7 @@ ask "WireGuard UDP 监听端口" "51820" port
 say "${C_TTL}第 3/5 步：隧道内网地址${C_OFF}"
 ask "本机隧道地址（带掩码）" "10.66.66.1/24" srv_addr
 ask "应用机隧道地址（不带掩码）" "10.66.66.2" cli_ip
+cli_ip="${cli_ip%%/*}"
 say "${C_TTL}第 4/5 步：应用机公钥${C_OFF}"
 say "如果应用机还没装，可以先留空，装完后在本机菜单选 4 补填"
 ask "应用机公钥（可留空）" "" cli_pub
@@ -236,6 +237,7 @@ ask_req "出口机公钥（出口机完成页里有）" srv_pub
 say "${C_TTL}第 3/5 步：隧道内网地址${C_OFF}"
 ask "本机隧道地址（带掩码）" "10.66.66.2/32" cli_addr
 ask "出口机隧道地址（不带掩码）" "10.66.66.1" srv_ip
+srv_ip="${srv_ip%%/*}"
 say "${C_TTL}第 4/5 步：MTU${C_OFF}"
 ask "隧道 MTU" "1380" mtu
 say "${C_TTL}第 5/5 步：冲突检查${C_OFF}"
@@ -314,11 +316,12 @@ wg show "$IFACE_NAME" 2>/dev/null || say "接口 $IFACE_NAME 未运行"
 }
 
 update_peer() {
-[ -f "$CONF" ] || die "本机还没有配置，先选 1 安装出口机"
+[ "$DRY_RUN" = "1" ] || [ -f "$CONF" ] || die "本机还没有配置，先选 1 安装出口机"
 local pub ip
 ask_req "新的应用机公钥" pub
 [ "${#pub}" = "44" ] || die "公钥长度不对（应为 44 个字符）"
 ask "应用机隧道地址（不带掩码）" "10.66.66.2" ip
+ip="${ip%%/*}"
 if [ "$DRY_RUN" = "1" ]; then ok "[dry-run] 将把 Peer 更新为 $pub / $ip/32"; return 0; fi
 if grep -q "^\[Peer\]" "$CONF"; then
 sed -i "s|^PublicKey =.*|PublicKey = $pub|" "$CONF"
@@ -326,7 +329,10 @@ sed -i "s|^AllowedIPs =.*|AllowedIPs = $ip/32|" "$CONF"
 else
 printf '\n[Peer]\nPublicKey = %s\nAllowedIPs = %s/32\n' "$pub" "$ip" >> "$CONF"
 fi
-wg syncconf "$IFACE_NAME" <(wg-quick strip "$IFACE_NAME") 2>/dev/null || systemctl restart "wg-quick@$IFACE_NAME"
+if ! wg syncconf "$IFACE_NAME" <(wg-quick strip "$IFACE_NAME") 2>/dev/null; then
+systemctl restart "wg-quick@$IFACE_NAME" || die "配置已写入但服务重启失败，先修配置再试：systemctl status wg-quick@$IFACE_NAME"
+fi
+wg show "$IFACE_NAME" >/dev/null 2>&1 || die "配置已写入但接口未运行，检查：wg show $IFACE_NAME"
 ok "Peer 已更新，应用机现在应该能握上手（在应用机 ping 本机隧道地址验证）"
 }
 
